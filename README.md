@@ -1,94 +1,197 @@
-# Exercice 03 : Déploiement Multi-Conteneurs WordPress avec Docker-Compose
+# Exercice 03 : Conteneurisation d'une Application Multi-Conteneurs (Docker)
 
-Ce projet présente la mise en place d'une architecture Web hautement disponible, segmentée et conteneurisée pour héberger la dernière version de WordPress. Au lieu d'utiliser un conteneur monolithique pré-généré, l'infrastructure sépare de manière professionnelle le serveur web frontal, le processeur de scripts (FastCGI) et le système de gestion de base de données relationnelle.
-
----
-
-## 📐 1. Architecture des Services & Réseau
-
-L'application est découpée en 3 micro-services isolés au sein d'un réseau bridge dédié (`wp-network`) :
-1. **`wp-nginx` (Nginx : latest) :** Serveur Web frontal recevant les connexions HTTP sur le port `80`. Il distribue le contenu statique (images, CSS) et transmet les requêtes dynamiques au moteur PHP.
-2. **`wp-php` (PHP : 8.2-fpm) :** Processeur de script (FastCGI Process Manager). Il exécute le code WordPress et intègre dynamiquement l'extension native `mysqli` indispensable pour dialoguer avec MariaDB.
-3. **`wp-database` (MariaDB : latest) :** Système de gestion de base de données relationnelle persistant.
-
-### 📦 Gestion de la Persistance et Volume Commun
-Pour répondre à l'exigence d'un **volume commun**, le fichier d'orchestration implémente un volume nommé partagé :
-* **`wp_data` :** Ce volume est monté simultanément dans le conteneur Nginx et le conteneur PHP sur le chemin `/var/www/html`. Nginx y accède pour localiser et lire les fichiers statiques, tandis que PHP en a besoin pour interpréter le code source des fichiers `.php`.
-* **`db_data` :** Assure la persistance des tables SQL de MariaDB de manière isolée dans `/var/lib/mysql`.
+Ce volet technique présente la conception, l'orchestration et le déploiement d'une architecture web dynamique hautement disponible basée sur **WordPress**, entièrement isolée via **Docker Compose** au sein d'un conteneur Linux (LXC) Debian sous l'hyperviseur Proxmox.
 
 ---
 
-## 🚀 2. Guide d'Installation de A à Z (Linux Proxmox LXC)
+## 📐 1. Spécifications de l'Architecture Multi-Conteneurs
 
-L'intégralité du déploiement a été réalisée sur un conteneur **Proxmox LXC** (Debian Trixie) avec l'option **Nesting (Imbrication)** activée.
+L'infrastructure applicative est découpée en micro-services spécialisés, interconnectés à travers un réseau virtuel privé isolé (Bridge) :
+* **Serveur Front-End (Nginx) :** Gère la réception des flux HTTP sur le port public `80` et fait office de reverse-proxy vers le moteur de script.
+* **Moteur d'Exécution (PHP 8.2-FPM) :** Interprète et traite de manière isolée les scripts applicatifs de WordPress.
+* **Persistance Relationnelle (MariaDB) :** Système de gestion de base de données (SGBD) sécurisé accueillant les tables de l'application.
+* **Volumes de Persistance :** Déclaration de volumes Docker nommés afin de garantir la persistance des fichiers de configuration Nginx, du code source WordPress et des données de la base SQL en cas de reconstruction des conteneurs.
 
-### Étape 1 : Préparation et installation du moteur Docker
-Mise à jour des dépôts locaux, installation des utilitaires de sécurité réseau et déploiement du moteur Docker officiel ainsi que de son plugin Compose :
+---
 
-```bash
-apt update && apt upgrade -y
-apt install -y ca-certificates curl gnupg lsb-release wget
-mkdir -p /etc/apt/keyrings
-curl -fsSL [https://download.docker.com/linux/debian/gpg](https://download.docker.com/linux/debian/gpg) | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-apt update
-apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+## 🚀 2. Guide de Déploiement Étape par Étape
 
-### 🐋 Étape 2 : Vérification de la santé du démon Docker
-Validation opérationnelle du service système avant de configurer l'application :
+### Étape 2.1 : Mise à Jour et Préparation du Système Hôte
+Avant toute installation, l'indexation des paquets Debian est actualisée afin de garantir la sécurité et la stabilité du système :
 
 ```bash
-systemctl status docker --no-pager
-docker --version
-docker compose version
-📁 Étape 3 : Création de l'arborescence du projet sur l'hôte
-Avant de rédiger les configurations, la structure des dossiers doit être créée sous /opt/ pour accueillir proprement les fichiers :
+root@WordPress:/opt/exercice-03-docker# apt update && apt upgrade -y
 
-Bash
-mkdir -p /opt/exercice-03-docker/nginx
-cd /opt/exercice-03-docker
-🌐 Étape 4 : Configuration du Serveur Web Nginx
-Création du fichier d'hôte virtuel dans le sous-dossier dédié pour gérer la redirection FastCGI :
+```
+![Mise à jour du système](captures/Mise_jour_du_systeme.png)
 
-Bash
-nano nginx/default.conf
-Contenu du fichier nginx/default.conf :
+### Étape 2.2 : Déploiement des Dépendances et Clés d'Authenticité
 
-Nginx
-# Insère ici ta configuration Nginx personnalisée
-📝 Étape 5 : Rédaction du descripteur d'orchestration Docker-Compose
-Création du fichier d'orchestration à la racine du projet pour lier les conteneurs, les volumes et le réseau :
+Installation des utilitaires de sécurité (`ca-certificates`, `gnupg`, `curl`) et ajout sécurisé du dépôt d'autorité stable officiel de Docker :
 
-Bash
-nano docker-compose.yaml
-Contenu du fichier docker-compose.yaml :
+```bash
+# 1. Installation des outils requis
+root@WordPress:/opt/exercice-03-docker# apt install -y ca-certificates curl gnupg lsb-release wget
 
-YAML
-# Copie-colle ton fichier ici en modifiant tes informations de connexion
-📥 Étape 6 : Téléchargement et déploiement des sources de l'application
-Bash
-# Téléchargement de l'archive officielle
-wget [https://wordpress.org/latest.tar.gz](https://wordpress.org/latest.tar.gz)
+```
+![Installation des prérequis](captures/Installation_des_prerequis.png)
 
-# Extraction et transfert vers le volume de stockage Docker de l'hôte
-tar -xzf latest.tar.gz
-cp -r wordpress/* /var/lib/docker/volumes/exercice-03-docker_wp_data/_data/
+```bash
+# 2. Configuration de la clé GPG Docker officielle
+root@WordPress:/opt/exercice-03-docker# mkdir -p /etc/apt/keyrings
+root@WordPress:/opt/exercice-03-docker# curl -fsSL [https://download.docker.com/linux/debian/gpg](https://download.docker.com/linux/debian/gpg) | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 
-# Attribution des permissions à l'utilisateur www-data (UID 33) pour l'exécution web
-chown -R 33:33 /var/lib/docker/volumes/exercice-03-docker_wp_data/_data/
+```
+![Ajout de la clé GPG Docker](captures/Ajout_de_la_cle_GPG_officielle_de_Docker.png)
 
-# Nettoyage des résidus
-rm -rf wordpress latest.tar.gz
-🧪 3. Phase de Validation Graphique (Interface Web)
-L'installation finale s'exécute depuis un navigateur à l'adresse IP locale du conteneur LXC : http://X.X.X.X.
+```bash
+# 3. Inscription du dépôt stable officiel
+root@WordPress:/opt/exercice-03-docker# echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] [https://download.docker.com/linux/debian](https://download.docker.com/linux/debian) $(lsb-release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-A. Initialisation de l'assistant de configuration
-L'affichage du sélecteur valide que Nginx transmet correctement les requêtes à PHP-FPM à travers le point de montage commun.
+```
 
-B. Appairage avec la Base de Données Centralisée
-Saisie des identifiants de sécurité. La variable de l'hôte est définie par db (et non localhost), permettant au DNS de Docker d'aiguiller le flux directement vers le conteneur MariaDB.
+---
+![Ajout du dépôt Docker officiel](captures/Ajout_du_dépôt_Docker_officiel.png)
 
-C. Finalisation de l'identité du site
-Création du profil d'administration du blog de l'entreprise avec le titre MiniLab DevOps et application d'un mot de passe fort.
+### Étape 2.3 : Installation et Audit du Démon Docker
 
-D. Authentification et Accès au Panneau de Contrôle
-Validation finale via la mire de connexion pour atteindre le tableau de bord d'administration général.
+Mise à jour des catalogues d'installation et déploiement du moteur de conteneurisation `docker-ce` et du greffon `docker-compose-plugin` :
+
+```bash
+root@WordPress:/opt/exercice-03-docker# apt update && apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+```
+![Installation de Docker et Docker Compose](captures/Installation_de_Docker_et_Docker-Compose.png)
+
+Vérification du statut d'exécution système du service Docker pour s'assurer de son état actif (`running`) :
+
+```bash
+root@WordPress:/opt/exercice-03-docker# systemctl status docker --no-pager
+root@WordPress:/opt/exercice-03-docker# docker --version
+root@WordPress:/opt/exercice-03-docker# docker compose version
+
+```
+
+---
+![Vérification de l'installation Docker](captures/verification_installation_docker.png)
+
+### Étape 2.4 : Conception des Fichiers de Configuration et d'Orchestration
+
+#### A. Le fichier d'orchestration globale (`docker-compose.yaml`)
+
+Création et édition complète du descripteur de l'architecture multi-conteneurs via l'éditeur `nano` :
+
+```bash
+root@WordPress:/opt/exercice-03-docker# nano docker-compose.yaml
+
+```
+![Docker Compose Partie 1](captures/Creaton_du_fichier_docker_compose.yaml-1.png)
+
+| Déclaration SGBD MariaDB et PHP-FPM | Déclaration Nginx, Volumes et Réseau Bridge |
+| --- | --- |
+|  | ![Docker Compose Partie 2](captures/Creaton%20du_fichier_docker_compose.yaml-2.png) |
+
+#### B. Configuration du VirtualHost Nginx (`nginx/default.conf`)
+
+Le fichier de configuration interne du serveur web est configuré de manière à router l'interprétation des scripts d'extension `.php` vers l'interface FastCGI du conteneur d'exécution PHP sur le port réseau interne `9000` :
+
+---
+![Configuration Nginx](captures/configuration_Nginx_nginx_default.conf.png)
+
+### Étape 2.5 : Intégration et Durcissement des Fichiers Sources WordPress
+
+Récupération de l'archive officielle stable de WordPress, extraction au sein du volume de données partagé, et alignement rigoureux des permissions d'accès au profil d'exécution du serveur web `www-data:www-data` (`33:33`) :
+
+```bash
+root@WordPress:/opt/exercice-03-docker# wget [https://wordpress.org/latest.tar.gz](https://wordpress.org/latest.tar.gz)
+root@WordPress:/opt/exercice-03-docker# tar -xzf latest.tar.gz
+root@WordPress:/opt/exercice-03-docker# cp -r wordpress/* /var/lib/docker/volumes/exercice-03-docker_wp_data/_data/
+root@WordPress:/opt/exercice-03-docker# chown -R 33:33 /var/lib/docker/volumes/exercice-03-docker_wp_data/_data/
+root@WordPress:/opt/exercice-03-docker# rm -rf wordpress latest.tar.gz
+
+```
+
+---
+|![Téléchargement WordPress](captures/telechargement_WordPress.png) | ![Déploiement WordPress](captures/Telechargement_et_deploiement_de_WordPress.png) |
+
+### Étape 2.6 : Instanciation et Lancement des Services
+
+Lancement du déploiement en tâche de fond (`daemon`), récupération automatisée des couches logicielles manquantes et validation du statut d'exécution des conteneurs :
+
+```bash
+root@WordPress:/opt/exercice-03-docker# docker compose up -d
+root@WordPress:/opt/exercice-03-docker# docker compose ps
+
+```
+
+---
+![Téléchargement et vérification des images Docker](captures/telechargement_verification_les_images_Nginx-PHP-MariaDB.png)
+
+## 🧪 3. Séquence d'Initialisation et Validation Visuelle de l'Application
+
+Une fois l'infrastructure réseau Docker active, la finalisation du déploiement s'opère par requêtage HTTP depuis un navigateur tiers à l'adresse logique de l'hôte : `http://192.168.221.250`.
+
+### Étape 3.1 : Initialisation de la Langue Système
+
+L'application intercepte la connexion initiale et bascule sur l'assistant graphique :
+
+![Choix de la langue](captures/WordPress-1.png)
+
+### Étape 3.2 : Rappel des Prérequis d'Infrastructure
+
+Notification de liaison pour valider la préparation des accès à la persistance SQL :
+
+![Prérequis WordPress](captures/WordPress-2.png)
+
+### Étape 3.3 : Configuration des Identifiants de Liaison Base de Données
+
+Saisie des variables d'environnement SQL déclarées dans le fichier Compose. L'hôte de la base de données est référencé par son alias réseau interne **`db`** :
+
+![Configuration base de données](captures/WordPress-3.png)
+
+### Étape 3.4 : Validation de la Communication Inter-Conteneurs
+
+L'application valide la réussite du pont de connectivité avec le conteneur MariaDB :
+
+![Connexion à la base de données réussie](captures/WordPress-4.png)
+
+### Étape 3.5 : Création du Compte d'Administration Central
+
+Configuration du titre de la maquette (`MiniLab DevOps`), attribution de l'identifiant privilégié d'administration et génération de la politique de mot de passe :
+
+![Création du site WordPress](captures/WordPress-5.png)
+
+### Étape 3.6 : Validation de l'Écriture des Tables en Base
+
+Confirmation du succès des requêtes SQL d'injection de la structure applicative :
+
+![Installation de WordPress réussie](captures/WordPress-6.png)
+
+### Étape 3.7 : Authentification Privilégiée
+
+Test de robustesse de la mire de sécurité d'accès au portail d'administration `wp-login.php` :
+
+![Authentification administrateur](captures/WordPress-7.png)
+
+### Étape 3.8 : Validation du Dashboard d'Administration (Console Centrale)
+
+Preuve formelle de conformité : accès réussi à la console d'administration centrale, validant le traitement global de l'architecture multi-conteneurs :
+
+![Tableau de bord WordPress](captures/WordPress-8.png)
+
+### Étape 3.9 : Validation Visuelle du Rendu Public du Site
+
+Vérification finale de la page d'accueil par défaut accessible aux utilisateurs finaux, confirmant l'affichage fluide et la parfaite synergie fonctionnelle entre Nginx, PHP-FPM et la base de données MariaDB :
+
+
+---
+![Site WordPress opérationnel](captures/WordPress-9.png)
+
+## 🎯 Compétences et Technologies Validées
+
+* **Conteneurisation & Isolation :** Docker Engine / Docker Compose (v2)
+* **Serveur Web & Reverse-Proxy :** Nginx (Configuration VirtualHost & FastCGI)
+* **Runtime Application :** PHP-FPM (v8.2)
+* **Système de Gestion de Base de Données :** MariaDB (Gestion des privilèges & Réseau Docker)
+* **Industrialisation des Droits :** Permissions POSIX de bas niveau (`www-data`)
+* **Infrastructure Virtuelle :** Debian GNU/Linux (Environnement LXC sous Proxmox VE)
